@@ -11,10 +11,27 @@
 namespace Tests\Settings\Controller;
 
 use OC\Settings\Application;
+use OC\Settings\Controller\UsersController;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\DataResponse;
 use OCP\AppFramework\Http\RedirectResponse;
 use \OCP\IUser;
+use Test\Traits\UserTrait;
+use OCP\IRequest;
+use OCP\IUserManager;
+use OCP\IGroupManager;
+use OCP\IUserSession;
+use OCP\IConfig;
+use OCP\Security\ISecureRandom;
+use OCP\IL10N;
+use OCP\ILogger;
+use OCP\Mail\IMailer;
+use OCP\AppFramework\Utility\ITimeFactory;
+use OCP\IURLGenerator;
+use OCP\App\IAppManager;
+use OCP\IAvatarManager;
+use OC\SubAdmin;
+
 
 /**
  * @group DB
@@ -2019,6 +2036,72 @@ class UsersControllerTest extends \Test\TestCase {
 		$this->assertEquals($expectedResult, $result);
 	}
 
+	public function dataforemailaddress() {
+		return [
+			['foo', 'foo', 'foo', 'foo' , 'foo@localhost'],
+			['bar', 'bar', 'bar', 'foo', 'foo@localhoster']
+		];
+	}
+
+	/**
+	 * Test to verify setting email address by user who had logged in
+	 * for itself.
+	 *
+	 * @dataProvider dataforemailaddress
+	 * @param $userName
+	 * @param $userPassword
+	 * @param $loginUser
+	 * @param $setUser
+	 * @param $emailAddress
+	 */
+	public function testSetSelfEmailAddress($userName, $userPassword, $loginUser, $setUser, $emailAddress) {
+		\OC::$server->getUserManager()->createUser($userName, $userPassword);
+
+		$appName = "settings";
+		$irequest = $this->createMock(IRequest::class);
+		$userManager = $this->createMock(IUserManager::class);
+		$groupManager = $this->createMock(IGroupManager::class);
+		$userSession = $this->createMock(IUserSession::class);
+		$iConfig = $this->createMock(IConfig::class);
+		$iSecureRandom = $this->createMock(ISecureRandom::class);
+		$iL10 = $this->createMock(IL10N::class);
+		$iLogger = $this->createMock(ILogger::class);
+		$ocDefault = $this->getMockBuilder('\OC_Defaults')
+			->disableOriginalConstructor()->getMock();
+		$iMailer = $this->createMock(IMailer::class);
+		$iTimeFactory = $this->createMock(ITimeFactory::class);
+		$urlGenerator = $this->createMock(IURLGenerator::class);
+		$appManager = $this->createMock(IAppManager::class);
+		$iAvatarManager = $this->createMock(IAvatarManager::class);
+		$userController = new UsersController($appName, $irequest, $userManager, $groupManager,
+			$userSession, $iConfig, $iSecureRandom, $iL10, $iLogger, $ocDefault, $iMailer,
+			$iTimeFactory, "", $urlGenerator, $appManager, $iAvatarManager);
+
+		$this->loginAsUser($loginUser);
+
+
+		$iUser = $this->createMock(IUser::class);
+		$userManager->method('get')->willReturn($iUser);
+		$iUser->method('getUID')->willReturn($loginUser);
+		$userSession->expects($this->any())
+			->method('getUser')
+			->willReturn($iUser);
+		$subAdmin = $this->createMock(SubAdmin::class);
+		$subAdmin->method('isSubAdmin')->with($iUser)->willReturn(false);
+		$groupManager->expects($this->any())
+			->method('getSubAdmin')
+			->willReturn($subAdmin);
+		$response = $userController->setEmailAddress($setUser, $emailAddress);
+		if ($loginUser !== $setUser) {
+			$this->assertEquals( new Http\JSONResponse([
+				'error' => 'cannotSetEmailAddress',
+				'message' => 'Cannot set email address for user'
+			], HTTP::STATUS_NOT_FOUND), $response);
+		} else {
+			$this->assertEquals(new Http\JSONResponse(), $response);
+		}
+	}
+
 	/**
 	 * @return array
 	 */
@@ -2425,6 +2508,33 @@ class UsersControllerTest extends \Test\TestCase {
 
 		$expectedResponse = new RedirectResponse(
 			$this->container['URLGenerator']->linkToRoute('settings.SettingsPage.getPersonal', ['changestatus' => 'error'])
+		);
+
+		$response = $this->container['UsersController']->changeMail($token, $userId, $mailAddress);
+		$this->assertEquals($expectedResponse, $response);
+	}
+
+	public function testSameLoggedUserAndRequestUser() {
+		$token = 'AVerySecretToken';
+		$userId = 'ExistingUser';
+		$mailAddress = 'sample@email.com';
+		$userObject = $this->getMockBuilder('OCP\IUser')
+			->disableOriginalConstructor()->getMock();
+		$diffUserObject = $this->getMockBuilder('OCP\IUser')
+			->disableOriginalConstructor()->getMock();
+
+		$this->container['UserManager']
+			->expects($this->atLeastOnce())
+			->method('get')
+			->with($userId)
+			->will($this->returnValue($userObject));
+		$this->container['UserSession']
+			->expects($this->any())
+			->method('getUser')
+			->will($this->returnValue($userObject));
+
+		$expectedResponse = new RedirectResponse(
+			$this->container['URLGenerator']->linkToRoute('settings.SettingsPage.getPersonal', ['changestatus' => 'success', 'user' => $userId])
 		);
 
 		$response = $this->container['UsersController']->changeMail($token, $userId, $mailAddress);
